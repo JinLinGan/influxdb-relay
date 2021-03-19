@@ -26,6 +26,9 @@ type HTTPConfig struct {
 
 	// Outputs is a list of backed servers where writes will be forwarded
 	Outputs []HTTPOutputConfig `toml:"output"`
+
+	// IsOldInfluxDB 是否使用V1API
+	IsOldInfluxDB bool `toml:"old-influxdb"`
 }
 
 type HTTPOutputConfig struct {

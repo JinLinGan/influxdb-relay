@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,10 @@ type HTTP struct {
 	l       net.Listener
 
 	backends []*httpBackend
+
+	isOldInfluxdb bool
+	dbParameter   string
+	writeEndPoint string
 }
 
 const (
@@ -41,6 +46,12 @@ const (
 
 	KB = 1024
 	MB = 1024 * KB
+
+	V1WriteEndpoint = "/write"
+	V2WriteEndpoint = "/api/v2/write"
+
+	V1DBParameter = "db"
+	V2DBParameter = "bucket"
 )
 
 func NewHTTP(cfg HTTPConfig) (Relay, error) {
@@ -56,9 +67,18 @@ func NewHTTP(cfg HTTPConfig) (Relay, error) {
 	if h.cert != "" {
 		h.schema = "https"
 	}
+	h.isOldInfluxdb = cfg.IsOldInfluxDB
+
+	if h.isOldInfluxdb {
+		h.dbParameter = V1DBParameter
+		h.writeEndPoint = V1WriteEndpoint
+	} else {
+		h.dbParameter = V2DBParameter
+		h.writeEndPoint = V2WriteEndpoint
+	}
 
 	for i := range cfg.Outputs {
-		backend, err := newHTTPBackend(&cfg.Outputs[i])
+		backend, err := newHTTPBackend(&cfg.Outputs[i], h.writeEndPoint)
 		if err != nil {
 			return nil, err
 		}
@@ -119,7 +139,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.URL.Path != "/api/v2/write" {
+	if r.URL.Path != h.writeEndPoint {
 		jsonError(w, http.StatusNotFound, "invalid write endpoint")
 		return
 	}
@@ -136,15 +156,14 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	queryParams := r.URL.Query()
 
-	// fail early if we're missing the database
-	if queryParams.Get("bucket") == "" {
-		jsonError(w, http.StatusBadRequest, "missing parameter: db")
-		return
+	if queryParams.Get("rp") == "" && h.rp != "" {
+		queryParams.Set("rp", h.rp)
 	}
 
-	//if queryParams.Get("rp") == "" && h.rp != "" {
-	//	queryParams.Set("rp", h.rp)
-	//}
+	if queryParams.Get(h.dbParameter) == "" {
+		jsonError(w, http.StatusBadRequest, "missing parameter: "+h.dbParameter)
+		return
+	}
 
 	var body = r.Body
 
@@ -209,7 +228,10 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		b := b
 		go func() {
 			defer wg.Done()
+
 			resp, err := b.post(outBytes, query, authHeader)
+
+			//log.Printf("backend %s ,err %s", b.name, err)
 			if err != nil {
 				log.Printf("Problem posting to relay %q backend %q: %v", h.Name(), b.name, err)
 			} else {
@@ -294,7 +316,10 @@ type simplePoster struct {
 	location string
 }
 
-func newSimplePoster(location string, timeout time.Duration, skipTLSVerification bool) *simplePoster {
+func newSimplePoster(location string, timeout time.Duration, skipTLSVerification bool, writeEndpoint string) *simplePoster {
+	url, _ := url.Parse(location)
+	url.Path = writeEndpoint
+
 	// Configure custom transport for http.Client
 	// Used for support skip-tls-verification option
 	transport := &http.Transport{
@@ -308,12 +333,12 @@ func newSimplePoster(location string, timeout time.Duration, skipTLSVerification
 			Timeout:   timeout,
 			Transport: transport,
 		},
-		location: location,
+		location: url.String(),
 	}
 }
 
 func (b *simplePoster) post(buf []byte, query string, auth string) (*responseData, error) {
-	req, err := http.NewRequest("POST", b.location+"/api/v2/write", bytes.NewReader(buf))
+	req, err := http.NewRequest("POST", b.location, bytes.NewReader(buf))
 	if err != nil {
 		return nil, err
 	}
@@ -351,7 +376,7 @@ type httpBackend struct {
 	name string
 }
 
-func newHTTPBackend(cfg *HTTPOutputConfig) (*httpBackend, error) {
+func newHTTPBackend(cfg *HTTPOutputConfig, writeEndpoint string) (*httpBackend, error) {
 	if cfg.Name == "" {
 		cfg.Name = cfg.Location
 	}
@@ -365,7 +390,7 @@ func newHTTPBackend(cfg *HTTPOutputConfig) (*httpBackend, error) {
 		timeout = t
 	}
 
-	var p poster = newSimplePoster(cfg.Location, timeout, cfg.SkipTLSVerification)
+	var p poster = newSimplePoster(cfg.Location, timeout, cfg.SkipTLSVerification, writeEndpoint)
 
 	// If configured, create a retryBuffer per backend.
 	// This way we serialize retries against each backend.
