@@ -119,7 +119,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.URL.Path != "/write" {
+	if r.URL.Path != "/api/v2/write" {
 		jsonError(w, http.StatusNotFound, "invalid write endpoint")
 		return
 	}
@@ -137,14 +137,14 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 
 	// fail early if we're missing the database
-	if queryParams.Get("db") == "" {
+	if queryParams.Get("bucket") == "" {
 		jsonError(w, http.StatusBadRequest, "missing parameter: db")
 		return
 	}
 
-	if queryParams.Get("rp") == "" && h.rp != "" {
-		queryParams.Set("rp", h.rp)
-	}
+	//if queryParams.Get("rp") == "" && h.rp != "" {
+	//	queryParams.Set("rp", h.rp)
+	//}
 
 	var body = r.Body
 
@@ -313,11 +313,10 @@ func newSimplePoster(location string, timeout time.Duration, skipTLSVerification
 }
 
 func (b *simplePoster) post(buf []byte, query string, auth string) (*responseData, error) {
-	req, err := http.NewRequest("POST", b.location, bytes.NewReader(buf))
+	req, err := http.NewRequest("POST", b.location+"/api/v2/write", bytes.NewReader(buf))
 	if err != nil {
 		return nil, err
 	}
-
 	req.URL.RawQuery = query
 	req.Header.Set("Content-Type", "text/plain")
 	req.Header.Set("Content-Length", strconv.Itoa(len(buf)))
